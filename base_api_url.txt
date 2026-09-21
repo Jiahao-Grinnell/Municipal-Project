@@ -1,0 +1,1 @@
+https://www.economia.gob.mx/apidatamexico/tesseract/data.jsonrecords?Flow=1&Product+Level=6&State=1&Year=2017&cube=economy_foreign_trade_mun&drilldowns=Municipality%2CHS6%2CFlow%2CYear%2CState%2CProduct+Level%2CCountry&measures=Trade+Value

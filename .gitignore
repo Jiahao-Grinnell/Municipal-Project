@@ -1,0 +1,7 @@
+# Keep the repository limited to source code and documentation.
+*
+!.gitignore
+!*.py
+!*.md
+!requirements.txt
+!base_api_url.txt
