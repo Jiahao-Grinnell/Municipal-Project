@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Run/resume annual BCMM extraction from Anaconda Prompt: python run_download.py.
+"""Run/resume BCMM extraction: python run_download.py [--frequency monthly].
 
-Defaults use base_api_url.txt and bcmm_hs6_annual beside this file. No Codex
+Defaults use base_api_url.txt and a frequency-specific folder beside this file. No Codex
 session is required. Each failed chunk gets up to 10 full attempts per launch;
 exhausted chunks are recorded and the remaining queue continues.
 """
@@ -201,7 +201,9 @@ def clear_dead_lock(root):
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--api-url-file", type=Path, default=HERE / "base_api_url.txt")
-    p.add_argument("--output-dir", type=Path, default=HERE / "bcmm_hs6_annual")
+    p.add_argument("--frequency", choices=["annual", "monthly"], default="annual")
+    p.add_argument("--months", default="01-12", help="Monthly selection, e.g. 01-12 or 01,06")
+    p.add_argument("--output-dir", type=Path)
     p.add_argument("--start-year", type=int, default=d.START_YEAR)
     p.add_argument("--end-year", type=int, default=d.END_YEAR)
     p.add_argument("--states", default="01-32")
@@ -217,6 +219,16 @@ def parse_args(argv=None):
     p.add_argument("--retry-failed", action="store_true", help="Only retry recorded unresolved chunks")
     p.add_argument("--dry-run", action="store_true", help="Print scope/config without writing or requesting data")
     args = p.parse_args(argv)
+    if args.output_dir is None:
+        args.output_dir = HERE / f"bcmm_hs6_{args.frequency}"
+    try:
+        d.state_ids(args.states)
+        from monthly_bcmm import month_ids
+        args.month_numbers = month_ids(args.months)
+    except ValueError as exc:
+        p.error(str(exc))
+    if args.frequency == "annual" and args.months != "01-12":
+        p.error("--months requires --frequency monthly")
     if not 1900 <= args.start_year <= args.end_year <= 9999:
         p.error("Invalid year range")
     if args.page_size < 1 or args.chunk_attempts < 1:
@@ -241,8 +253,11 @@ def main(argv=None):
     locked = False
     ledger = None
     try:
-        template = d.QueryTemplate(args.api_url_file.read_text(encoding="utf-8-sig").strip())
-        chunks = [d.Chunk(year, state, flow) for year in range(args.start_year, args.end_year + 1)
+        from monthly_bcmm import MonthlyQueryTemplate
+        template_class = MonthlyQueryTemplate if args.frequency == "monthly" else d.QueryTemplate
+        template = template_class(args.api_url_file.read_text(encoding="utf-8-sig").strip())
+        chunks = [d.Chunk(year, state, flow, month) for year in range(args.start_year, args.end_year + 1)
+                  for month in (args.month_numbers if args.frequency == "monthly" else [None])
                   for state in d.state_ids(args.states) for flow in args.flows.split(",")]
         if args.dry_run:
             print(f"No requests/writes. Scope: {len(chunks)} chunks, output={root}")
@@ -262,6 +277,10 @@ def main(argv=None):
             handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
             LOG.addHandler(handler)
             manifest = d.Manifest(root / "manifest.csv")
+            other_prefix = "bcmm_hs6_annual_" if args.frequency == "monthly" else "bcmm_hs6_monthly_"
+            if any(r["filename"].startswith(other_prefix) for r in manifest.rows) or any(
+                    (root / "raw").glob(other_prefix + "*.csv")):
+                raise d.ValidationError("Do not mix annual and monthly data in one output directory.")
             ledger = FailureLedger(root)
             ledger.save()
             if args.retry_failed:
@@ -300,6 +319,8 @@ def main(argv=None):
                     client = d.Client(session, pause=args.request_pause, timeout=args.read_timeout,
                                       max_retries=2, connect_timeout=args.connect_timeout,
                                       retry_base=10, retry_cap=60)
+                    if args.frequency == "monthly":
+                        client.transform_rows = template.normalize_rows
                     evidence_path = root / "logs" / f"preflight_{run_id}.jsonl.gz"
                     with gzip.open(evidence_path, "wt", encoding="utf-8") as evidence:
                         client.archive = evidence

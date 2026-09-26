@@ -1,4 +1,4 @@
-Annual municipality HS6 BCMM downloader
+Annual and monthly municipality HS6 BCMM downloader
 =====================================
 
 **Current standalone entry point:** `python run_download.py`. See
@@ -6,6 +6,43 @@ Annual municipality HS6 BCMM downloader
 the existing output, uses generous timeouts and pacing, retries each failed chunk
 up to 10 times, records unresolved failures, and continues the queue. The lower-level
 commands and original pilot workflow below remain available for diagnostic use.
+
+**Monthly mode:** run `python run_download.py --frequency monthly`. It selects
+2006–2025, months 01–12, states 01–32, and both flows: **15,360 chunks**, each
+covering one month, state, and flow. Results go to `bcmm_hs6_monthly/` by default.
+Annual mode remains the default and uses `bcmm_hs6_annual/`.
+
+Monthly CSVs retain the annual columns, including `Year` (or `Date Year` for a
+template using that name), and append only `Month` in `YYYY-MM` format. The
+monthly API returns `Month ID` and `Month`; the adapter verifies their agreement,
+derives the year from the source month, and omits `Month ID` from the CSV.
+Unmodified responses, including `Month ID`, remain in the response archives.
+Logical keys include the month, and each row must match its requested month.
+All other source fields and Trade Value strings are preserved.
+
+The same annual `base_api_url.txt` is used as configuration. Monthly mode replaces
+the annual drilldown with `Month` and the year cut with `Month=YYYYMM`; do not
+replace that configuration file with a monthly URL. Startup pagination probes
+use January of the template's reference year/state/flow. That reference slice
+must be nonempty. Empty requested chunks are saved with explicit empty status;
+they do not establish that a month or year is unavailable.
+
+```bat
+python run_download.py --frequency monthly --dry-run
+python run_download.py --frequency monthly --start-year 2017 --end-year 2017 --months 01 --states 01 --flows 1
+python run_download.py --frequency monthly
+python run_download.py --frequency monthly --retry-failed
+```
+
+Completed chunks are validated and skipped. Monthly mode uses the same timeouts,
+request pacing, ten-attempt chunk retries, and failure ledger as annual mode.
+The month is explicit in chunk filenames and request URLs in the manifest and
+failure ledger; their existing schemas are retained for annual compatibility.
+Use distinct output directories for the two frequencies. The existing
+`combine_bcmm_chunks.py` is an annual merger and must not be used for monthly
+output. Download integrity checks do not establish full source coverage or
+reconciliation; monthly and annual published values may differ, and monthly
+values must not automatically replace the annual extraction.
 
 Use `download_bcmm_hs6_annual.py`. It downloads published cells from
 `economy_foreign_trade_mun`, with annual Year/Date Year, Municipality, HS6,

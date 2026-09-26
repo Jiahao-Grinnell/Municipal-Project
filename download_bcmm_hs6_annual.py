@@ -81,9 +81,12 @@ class Chunk:
     year: int
     state: str
     flow: str
+    month: int | None = None
 
     @property
     def filename(self) -> str:
+        if self.month is not None:
+            return f"bcmm_hs6_monthly_y{self.year}_m{self.month:02d}_s{self.state}_f{self.flow}.csv"
         return f"bcmm_hs6_annual_y{self.year}_s{self.state}_f{self.flow}.csv"
 
 
@@ -258,6 +261,8 @@ def observe_flow(mapping: dict[str, str], flow: str, label: str) -> None:
 
 
 def validate_row(row: dict, schema: dict, chunk: Chunk, flows: dict) -> str:
+    if chunk.month is not None and row.get("Month") != f"{chunk.year:04d}-{chunk.month:02d}":
+        raise ValidationError(f"Wrong Month: {row.get('Month')!r} for {chunk.filename}")
     for key, value in row.items():
         if isinstance(value, (dict, list, bool)):
             raise ValidationError(f"Unexpected non-scalar/boolean value in {key}: {value!r}")
@@ -279,7 +284,8 @@ def validate_row(row: dict, schema: dict, chunk: Chunk, flows: dict) -> str:
     observe_flow(flows, chunk.flow, identifier("flow"))
     # API HS6 IDs in the real sample are 7/8 digits. Never truncate them to six!
     return json.dumps([str(chunk.year), state.zfill(2), mun.zfill(5), identifier("hs6_id"),
-                       identifier("country_id"), chunk.flow], ensure_ascii=False)
+                       identifier("country_id"), chunk.flow] +
+                      ([row["Month"]] if chunk.month is not None else []), ensure_ascii=False)
 
 
 class Client:
@@ -293,6 +299,7 @@ class Client:
         self.retries = 0
         self.errors = 0
         self.last_request_end = 0.0
+        self.transform_rows = None
 
     def get(self, url: str, purpose="page") -> list[dict]:
         for attempt in range(self.max_retries + 1):
@@ -309,7 +316,8 @@ class Client:
                 if response.status_code != 200:
                     retryable = response.status_code in (429, 500, 502, 503, 504)
                     raise ValidationError(f"HTTP {response.status_code}: {response.text[:300]!r}")
-                return extract_rows(response.text)
+                rows = extract_rows(response.text)
+                return self.transform_rows(rows) if self.transform_rows else rows
             except (requests.RequestException, ValidationError) as exc:
                 retryable = retryable or isinstance(exc, (requests.ConnectionError,
                                                          requests.Timeout,

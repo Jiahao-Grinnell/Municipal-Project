@@ -1,5 +1,42 @@
 # Run from Anaconda Prompt
 
+For **monthly** downloads, use:
+
+```bat
+cd /d "C:\path\to\Municipal-Project"
+python run_download.py --frequency monthly
+```
+
+Replace the directory with your local project path.
+
+This selects **15,360 month/state/flow chunks** for 2006–2025 and stores them in
+`bcmm_hs6_monthly`. Each CSV retains the annual columns and appends `Month`
+(`YYYY-MM`). `Year` is derived from the verified source month. Original source
+Month IDs remain in the response archives. Keep `monthly_bcmm.py` beside the
+other Python files and keep the existing annual `base_api_url.txt`.
+
+Check the configuration or download a single monthly chunk first:
+
+```bat
+python run_download.py --frequency monthly --dry-run
+python run_download.py --frequency monthly --start-year 2017 --end-year 2017 --months 01 --states 01 --flows 1
+```
+
+Resume the full monthly queue with the original monthly command. Retry only
+recorded failures with:
+
+```bat
+python run_download.py --frequency monthly --retry-failed
+```
+
+The retry, pacing, validation, interruption, and exit-code rules below apply to
+both modes. For monthly mode, read output paths below as `bcmm_hs6_monthly`.
+Month numbers accept ranges or lists, such as `--months 01-06` or `--months 01,07`.
+Use a separate directory for each frequency. Empty chunks remain explicitly
+marked empty and require coverage investigation. Reconciliation is still pending.
+
+## Annual downloads
+
 Open **Anaconda Prompt** and run:
 
 ```bat

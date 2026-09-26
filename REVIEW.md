@@ -1,6 +1,26 @@
 Review findings and validation record
 =====================================
 
+Monthly extension (September 21, 2026)
+-------------------------------------
+
+The standalone runner now supports `--frequency monthly`, selecting one
+month/state/flow per chunk. Monthly CSVs preserve the annual fields and append
+`Month` as `YYYY-MM`; source Month IDs and unchanged responses are archived.
+Year is derived only after the source Month ID and Month label agree. Each row
+must match the requested month and its logical key includes the month.
+
+All 45 offline tests passed, including monthly filter rejection, field
+preservation, failure retries, empty chunks, failed-only reruns, resume without
+network access, and rejection of mixed annual/monthly output directories.
+A live January 2017/state 01/flow 1 chunk returned 2,321 records and passed the
+terminal-empty-page and first/last-record checks. Transient connection timeouts
+were retried successfully. Evidence is retained locally in
+`bcmm_hs6_monthly_smoke/`, excluded from Git. This single-chunk test does not
+establish nationwide monthly coverage; reconciliation remains pending.
+
+The remaining sections describe the original annual review.
+
 This document records the initial review. Subsequent execution of the
 user-approved broader pilot and production pull is tracked separately in
 `bcmm_hs6_pilot/execution_report.json` and `bcmm_hs6_annual/manifest.csv`.
