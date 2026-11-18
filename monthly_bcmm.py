@@ -8,26 +8,31 @@ import download_bcmm_hs6_annual as d
 class MonthlyQueryTemplate(d.QueryTemplate):
     """Derive a monthly query from the validated annual URL configuration."""
 
-    def __init__(self, url):
-        super().__init__(url)
+    def __init__(self, url, product_level=6):
+        super().__init__(url, product_level=product_level)
         self.year_column = next(x for x in self.tokens("drilldowns")
                                 if x in ("Year", "Date Year"))
         self.reference = d.Chunk(self.reference.year, self.reference.state,
-                                 self.reference.flow, 1)
+                                 self.reference.flow, 1, product_level)
 
     def url(self, chunk, limit):
+        if chunk.product_level != self.product_level:
+            raise d.ValidationError("Chunk product level does not match the query template.")
         if chunk.month is None or not 1 <= chunk.month <= 12:
             raise d.ValidationError("Monthly queries require a month in 1..12.")
         changes = {"State": chunk.state if self.padded_state else str(int(chunk.state)),
-                   "Flow": chunk.flow, "Product Level": "6", "limit": limit,
-                   "drilldowns": ",".join("Month" if x in ("Year", "Date Year") else x
-                                          for x in self.tokens("drilldowns"))}
+                   "Flow": chunk.flow, "Product Level": str(self.product_level), "limit": limit}
         segments = []
         seen = set()
         for raw, key, value in self.segments:
             if key == self.year_key:
                 continue
-            if key in changes:
+            if key == "drilldowns":
+                drills = ",".join("Month" if x in ("Year", "Date Year") else
+                                 self.product_name if x == self.source_product else x
+                                 for x in (token.strip() for token in value.split(",")))
+                segments.append(raw.split("=", 1)[0] + "=" + quote_plus(drills))
+            elif key in changes:
                 segments.append(raw.split("=", 1)[0] + "=" + quote_plus(changes[key]))
                 seen.add(key)
             else:
@@ -47,7 +52,7 @@ class MonthlyQueryTemplate(d.QueryTemplate):
         remains in response archives; no extra Month ID column enters the CSV.
         """
         output = []
-        for row in rows:
+        for row in super().normalize_rows(rows):
             month_id, month = row.get("Month ID"), row.get("Month")
             if (not isinstance(month_id, str) or
                     not re.fullmatch(r"[0-9]{4}(0[1-9]|1[0-2])", month_id) or

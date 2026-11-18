@@ -1,5 +1,53 @@
 # Run from Anaconda Prompt
 
+## HS2: separate annual and monthly downloads
+
+From the project directory, run:
+
+```bat
+python run_download.py --product-level 2 --frequency annual
+python run_download.py --product-level 2 --frequency monthly
+```
+
+Annual output: `bcmm_hs2_annual` (1,280 chunks). Monthly output:
+`bcmm_hs2_monthly` (15,360 chunks). Both select 2006-2025, 32 states, both flows,
+Product Level=2 and the independent `HS2 2 Digit` hierarchy. Product columns become
+`HS2 ID` and `HS2`; monthly files additionally retain `Month` as `YYYY-MM`.
+
+Keep the existing `base_api_url.txt`. Append `--dry-run` to check configuration,
+repeat the same command to resume, or append `--retry-failed` to retry failures.
+HS4 and HS6 filenames and resume fingerprints are preserved. The ongoing HS4
+monthly process does not need a restart, and each HS2 mode writes to its own directory.
+
+After annual downloading finishes successfully, combine the validated chunks:
+
+```bat
+python combine_bcmm_chunks.py --product-level 2
+```
+
+## HS4: separate annual and monthly downloads
+
+Run these commands from this project directory in Anaconda Prompt:
+
+```bat
+python run_download.py --product-level 4 --frequency annual
+python run_download.py --product-level 4 --frequency monthly
+```
+
+They write to `bcmm_hs4_annual` and `bcmm_hs4_monthly`, respectively. Each keeps
+its own chunk files, manifest, failure ledger, archives, and logs. Annual mode
+selects 1,280 year/state/flow chunks; monthly mode selects 15,360 month/state/flow
+chunks. Both use 2006?2025, all 32 states, both flows, and Product Level=4.
+
+Other column names stay the same; product columns are `HS4 ID` and `HS4`.
+Monthly files append `Month` (`YYYY-MM`). Keep the existing `base_api_url.txt`.
+The code queries the independent `HS4 4 Digit` hierarchy directly and retains
+unmodified API responses in the archives.
+
+Append `--dry-run` to check settings without downloading. Repeat the same
+command to resume, or append `--retry-failed` to retry that mode's failures.
+The timeout, pacing, retries, and validation rules below apply to HS4 too.
+
 For **monthly** downloads, use:
 
 ```bat
@@ -34,6 +82,21 @@ both modes. For monthly mode, read output paths below as `bcmm_hs6_monthly`.
 Month numbers accept ranges or lists, such as `--months 01-06` or `--months 01,07`.
 Use a separate directory for each frequency. Empty chunks remain explicitly
 marked empty and require coverage investigation. Reconciliation is still pending.
+
+## Combine completed monthly chunks into five-year files
+
+For HS4, run after the monthly queue is complete and the failure list is empty:
+
+```bat
+python combine_bcmm_monthly.py --product-level 4
+```
+
+This writes four CSVs to `bcmm_hs4_monthly/combined_5year` for 2006-2010,
+2011-2015, 2016-2020, and 2021-2025, plus `combined_manifest.json` with checksums
+and row totals. Each CSV retains the monthly observations and all original
+columns, including `Month`; values are not summed. Source chunks remain intact.
+The merger fully validates the source files and archives before staging outputs.
+Use the matching `--product-level 2` or `6` only after that monthly queue is complete.
 
 ## Annual downloads
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sequential, audited annual BCMM HS6 extraction. See README.md before production.
+"""Sequential, audited annual BCMM HS6/HS4/HS2 extraction. See README.md before production.
 
 The URL is supplied by the user, never reconstructed from an assumed endpoint.
 Trade Value only is authorized for this project; --require-number-of-firms opts
@@ -33,6 +33,7 @@ START_YEAR = 2006
 END_YEAR = 2025
 CUBE = "economy_foreign_trade_mun"
 VERSION = "3.0"
+PRODUCT_DRILLDOWNS = {2: "HS2 2 Digit", 4: "HS4 4 Digit", 6: "HS6"}
 LOG = logging.getLogger("bcmm")
 
 
@@ -82,12 +83,17 @@ class Chunk:
     state: str
     flow: str
     month: int | None = None
+    product_level: int = 6
+
+    def __post_init__(self):
+        if self.product_level not in (2, 4, 6):
+            raise ValidationError("Product level must be 2, 4 or 6.")
 
     @property
     def filename(self) -> str:
         if self.month is not None:
-            return f"bcmm_hs6_monthly_y{self.year}_m{self.month:02d}_s{self.state}_f{self.flow}.csv"
-        return f"bcmm_hs6_annual_y{self.year}_s{self.state}_f{self.flow}.csv"
+            return f"bcmm_hs{self.product_level}_monthly_y{self.year}_m{self.month:02d}_s{self.state}_f{self.flow}.csv"
+        return f"bcmm_hs{self.product_level}_annual_y{self.year}_s{self.state}_f{self.flow}.csv"
 
 
 class QueryTemplate:
@@ -98,7 +104,11 @@ class QueryTemplate:
     Encoded Viz Builder cuts[] URLs are UI URLs, not this API's flat grammar.
     """
 
-    def __init__(self, url: str, require_firms: bool = False):
+    def __init__(self, url: str, require_firms: bool = False, product_level: int = 6):
+        if product_level not in (2, 4, 6):
+            raise ValidationError("Product level must be 2, 4 or 6.")
+        self.product_level = product_level
+        self.product_name = PRODUCT_DRILLDOWNS[product_level]
         self.parts = urlsplit(url.strip())
         if self.parts.scheme not in ("https", "http") or not self.parts.netloc:
             raise ValidationError("Provide a full copied API URL.")
@@ -123,10 +133,16 @@ class QueryTemplate:
         if len(years) != 1:
             raise ValidationError("Expected exactly one annual cut name: Year or Date Year.")
         self.year_key = years[0]
+        source_level = self.one("Product Level")
+        allowed_sources = {2: ("2", "6"), 4: ("4", "6"), 6: ("6",)}
+        if source_level not in allowed_sources[product_level]:
+            raise ValidationError(f"Use an annual HS6 URL or a native HS{product_level} URL "
+                                  f"for HS{product_level} extraction.")
+        self.source_product = PRODUCT_DRILLDOWNS[int(source_level)]
         drills = self.tokens("drilldowns")
-        expected = {"Municipality", "HS6", "Flow", "State", "Product Level", "Country"}
+        expected = {"Municipality", self.source_product, "Flow", "State", "Product Level", "Country"}
         if set(drills) not in (expected | {"Year"}, expected | {"Date Year"}):
-            raise ValidationError(f"Unexpected drilldowns {drills}; require Municipality, HS6, "
+            raise ValidationError(f"Unexpected drilldowns {drills}; require Municipality, {self.source_product}, "
                                   "Flow, Year/Date Year, State, Product Level, Country only.")
         measures = self.tokens("measures")
         if "Trade Value" not in measures or set(measures) - {"Trade Value", "Number of Firms"}:
@@ -134,8 +150,6 @@ class QueryTemplate:
         if require_firms and "Number of Firms" not in measures:
             raise ValidationError("Number of Firms required but absent from copied URL.")
         self.require_firms = require_firms or "Number of Firms" in measures
-        if self.one("Product Level") != "6":
-            raise ValidationError("The copied URL must already have Product Level=6.")
         state = self.one("State")
         flow = self.one("Flow")
         year = self.one(self.year_key)
@@ -144,7 +158,7 @@ class QueryTemplate:
         if not re.fullmatch(r"[0-9]{4}", year) or not re.fullmatch(r"[A-Za-z0-9_-]+", flow):
             raise ValidationError("Template must have one annual year and one flow ID.")
         self.padded_state = state.startswith("0")
-        self.reference = Chunk(int(year), state.zfill(2), flow)
+        self.reference = Chunk(int(year), state.zfill(2), flow, product_level=product_level)
         # Conflicting repeated cuts/limits cannot be interpreted safely.
         if self.values("limit"):
             self.one("limit")
@@ -162,13 +176,19 @@ class QueryTemplate:
         return [token.strip() for value in self.values(key) for token in value.split(",")]
 
     def url(self, chunk: Chunk, limit: str) -> str:
+        if chunk.product_level != self.product_level:
+            raise ValidationError("Chunk product level does not match the query template.")
         changes = {self.year_key: str(chunk.year), "State": chunk.state if self.padded_state
-                   else str(int(chunk.state)), "Flow": chunk.flow, "Product Level": "6",
+                   else str(int(chunk.state)), "Flow": chunk.flow, "Product Level": str(self.product_level),
                    "limit": limit}
         segments = []
         seen = set()
-        for raw, key, _ in self.segments:
-            if key in changes:
+        for raw, key, value in self.segments:
+            if key == "drilldowns" and self.source_product != self.product_name:
+                drills = ",".join(self.product_name if x.strip() == self.source_product else x
+                                 for x in value.split(","))
+                segments.append(raw.split("=", 1)[0] + "=" + quote_plus(drills))
+            elif key in changes:
                 segments.append(raw.split("=", 1)[0] + "=" + quote_plus(changes[key]))
                 seen.add(key)
             else:
@@ -182,7 +202,27 @@ class QueryTemplate:
         return self.url(chunk, limit)
 
     def fingerprint(self, chunk: Chunk) -> str:
-        return digest([VERSION, self.url(chunk, "1"), self.require_firms])
+        original = digest([VERSION, self.url(chunk, "1"), self.require_firms])
+        if self.product_level == 2:
+            return digest(["hs2-v1", original])
+        return digest(["hs4-v1", original]) if self.product_level == 4 else original
+
+    def normalize_rows(self, rows: list[dict]) -> list[dict]:
+        """Expose the requested product column names; archives keep native API headers."""
+        if self.product_level == 6:
+            return rows
+        names = {f"{self.product_name} ID": f"HS{self.product_level} ID",
+                 self.product_name: f"HS{self.product_level}"}
+        output = []
+        for row in rows:
+            normalized = {}
+            for key, value in row.items():
+                column = names.get(key, key)
+                if column in normalized:
+                    raise ValidationError(f"Conflicting source columns for {column!r}.")
+                normalized[column] = value
+            output.append(normalized)
+        return output
 
 
 def unique_object(pairs):
@@ -227,7 +267,7 @@ def extract_rows(text: str) -> list[dict]:
 
 ALIASES = {
     "municipality_id": ("Municipality ID",), "municipality": ("Municipality",),
-    "hs6_id": ("HS6 ID", "HS6 Code"), "hs6": ("HS6",),
+    "product_id": ("HS6 ID", "HS6 Code"), "product": ("HS6",),
     "flow_id": ("Flow ID",), "flow": ("Flow",), "year": ("Date Year", "Year"),
     "state_id": ("State ID",), "state": ("State",), "level": ("Product Level",),
     "country_id": ("Country / Region ID", "Country ID", "Country/Region ID", "Country Region ID"),
@@ -240,9 +280,12 @@ def name_key(value: str) -> str:
     return re.sub(r"[\s_]+", " ", value).strip().casefold()
 
 
-def schema_for(row: dict, require_firms: bool) -> dict[str, str]:
+def schema_for(row: dict, require_firms: bool, product_level: int = 6) -> dict[str, str]:
     schema = {}
-    for role, aliases in ALIASES.items():
+    aliases_by_role = dict(ALIASES)
+    aliases_by_role["product_id"] = (f"HS{product_level} ID", f"HS{product_level} Code")
+    aliases_by_role["product"] = (f"HS{product_level}",)
+    for role, aliases in aliases_by_role.items():
         matches = [key for key in row if name_key(key) in {name_key(a) for a in aliases}]
         if not matches and role == "firms" and not require_firms:
             continue
@@ -271,19 +314,19 @@ def validate_row(row: dict, schema: dict, chunk: Chunk, flows: dict) -> str:
         if not isinstance(value, str) or not value.strip():
             raise ValidationError(f"Missing or non-string {role}: {value!r}")
         return value
-    for role in ("municipality", "hs6", "country", "state"):
+    for role in ("municipality", "product", "country", "state"):
         identifier(role)
     mun, state = identifier("municipality_id"), identifier("state_id")
     if not re.fullmatch(r"[0-9]{1,5}", mun) or not re.fullmatch(r"[0-9]{1,2}", state):
         raise ValidationError(f"Unexpected INEGI identifiers: municipality={mun!r}, state={state!r}")
     if state.zfill(2) != chunk.state or mun.zfill(5)[:2] != chunk.state:
         raise ValidationError(f"Geography outside requested state {chunk.state}: {mun}, {state}")
-    for role, expected in (("year", str(chunk.year)), ("level", "6"), ("flow_id", chunk.flow)):
+    for role, expected in (("year", str(chunk.year)), ("level", str(chunk.product_level)), ("flow_id", chunk.flow)):
         if identifier(role) != expected:
             raise ValidationError(f"Wrong {role}: {row[schema[role]]!r}; expected {expected!r}")
     observe_flow(flows, chunk.flow, identifier("flow"))
-    # API HS6 IDs in the real sample are 7/8 digits. Never truncate them to six!
-    return json.dumps([str(chunk.year), state.zfill(2), mun.zfill(5), identifier("hs6_id"),
+    # Source product IDs are internal identifiers, not standard HS codes. Keep them intact.
+    return json.dumps([str(chunk.year), state.zfill(2), mun.zfill(5), identifier("product_id"),
                        identifier("country_id"), chunk.flow] +
                       ([row["Month"]] if chunk.month is not None else []), ensure_ascii=False)
 
@@ -362,7 +405,7 @@ def verify_pagination(client: Client, template: QueryTemplate, flows: dict) -> t
     order, first = ("offset-rows", a) if a else ("rows-offset", b)
     if len(first) > 2:
         raise ValidationError("API ignored the two-row probe limit.")
-    schema = schema_for(first[0], template.require_firms)
+    schema = schema_for(first[0], template.require_firms, template.product_level)
     for row in first:
         if set(row) != set(first[0]):
             raise ValidationError("Schema drift during preflight.")
@@ -447,6 +490,16 @@ def resume_ok(root: Path, chunk: Chunk, template: QueryTemplate, manifest: Manif
     return True
 
 
+def validate_output_scope(root: Path, manifest: Manifest, product_level: int, monthly: bool) -> None:
+    """Keep each product level and frequency in its own output directory."""
+    frequency = "monthly" if monthly else "annual"
+    prefix = f"bcmm_hs{product_level}_{frequency}_"
+    if any(not r["filename"].startswith(prefix) or r["prod_level"] != str(product_level)
+           for r in manifest.rows) or any(
+            not path.name.startswith(prefix) for path in (root / "raw").glob("bcmm_hs*.csv")):
+        raise ValidationError("Do not mix product levels or annual and monthly data in one output directory.")
+
+
 def download_chunk(client: Client, template: QueryTemplate, chunk: Chunk, root: Path,
                    manifest: Manifest, order: str, reference_columns: list[str], flows: dict,
                    page_size: int) -> dict:
@@ -460,7 +513,7 @@ def download_chunk(client: Client, template: QueryTemplate, chunk: Chunk, root: 
     archive = archive_dir / (chunk.filename + f".{attempt}.jsonl.gz")
     db_path = root / "logs" / (attempt + ".sqlite.part")
     first_url = template.page_url(chunk, page_size, 0, order)
-    row = dict(attempt_id=attempt, filename=chunk.filename, prod_level=6, year=chunk.year,
+    row = dict(attempt_id=attempt, filename=chunk.filename, prod_level=chunk.product_level, year=chunk.year,
                ent_id=chunk.state, flow_id=chunk.flow, n_rows=0, n_pages=0, completed=0,
                status="started", query_url=first_url, query_fingerprint=template.fingerprint(chunk),
                date_pulled=utc_now(), page_size_requested=page_size, limit_order=order,
@@ -492,7 +545,7 @@ def download_chunk(client: Client, template: QueryTemplate, chunk: Chunk, root: 
                     raise ValidationError("Server returned more rows than requested; limit is unreliable.")
                 if schema is None:
                     columns = list(records[0])
-                    schema = schema_for(records[0], template.require_firms)
+                    schema = schema_for(records[0], template.require_firms, template.product_level)
                     row["columns"] = json.dumps(columns, ensure_ascii=False)
                     row["number_of_firms_present"] = int("firms" in schema)
                     LOG.info("%s columns=%s", chunk.filename, columns)
@@ -554,7 +607,7 @@ def download_chunk(client: Client, template: QueryTemplate, chunk: Chunk, root: 
         replace_with_retry(part, final)
         row.update(completed=1, status="downloaded" if offset else "downloaded_empty",
                    notes="Empty terminal page and boundary checks passed; controls/units/coverage "
-                         "not reconciled. Raw IDs preserved; no standard HS6 mapping derived.")
+                         "not reconciled. Raw IDs preserved; no standard HS mapping derived.")
         manifest.append(row)
         return row
     except BaseException as exc:
@@ -609,12 +662,13 @@ def parse_args(argv=None):
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--api-url", help="Actual API URL copied from live Viz Builder")
     source.add_argument("--api-url-file", type=Path, help="Text file containing the copied API URL")
+    parser.add_argument("--product-level", type=int, choices=[2, 4, 6], default=6)
     parser.add_argument("--start-year", type=int, default=START_YEAR)
     parser.add_argument("--end-year", type=int, default=END_YEAR)
     parser.add_argument("--states", default="01-32")
     parser.add_argument("--flows", default="1,2", help="Raw flow IDs, without assumed meanings")
     parser.add_argument("--page-size", type=int, default=1000)
-    parser.add_argument("--output-dir", type=Path, default=Path("bcmm_hs6_annual"))
+    parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--max-retries", type=int, default=6)
     parser.add_argument("--pause", type=float, default=0.5)
     parser.add_argument("--timeout", type=float, default=90)
@@ -625,6 +679,8 @@ def parse_args(argv=None):
     parser.add_argument("--require-number-of-firms", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
+    if args.output_dir is None:
+        args.output_dir = Path(f"bcmm_hs{args.product_level}_annual")
     if not 1900 <= args.start_year <= args.end_year <= 9999:
         parser.error("Invalid year range.")
     if args.page_size < 1 or args.max_retries < 0 or args.pause < 0 or args.timeout <= 0:
@@ -638,15 +694,15 @@ def main(argv=None) -> int:
                         format="%(asctime)s %(levelname)s %(message)s")
     try:
         url = args.api_url or args.api_url_file.read_text(encoding="utf-8-sig").strip()
-        template = QueryTemplate(url, args.require_number_of_firms)
+        template = QueryTemplate(url, args.require_number_of_firms, args.product_level)
         flows_selected = list(dict.fromkeys(x.strip() for x in args.flows.split(",")))
         if any(not re.fullmatch(r"[A-Za-z0-9_-]+", x) for x in flows_selected):
             raise ValidationError("Invalid flow IDs.")
         chunks = ([template.reference] if args.test_live else
-                  [Chunk(year, state, flow) for year in range(args.start_year, args.end_year + 1)
+                  [Chunk(year, state, flow, product_level=args.product_level) for year in range(args.start_year, args.end_year + 1)
                    for state in state_ids(args.states) for flow in flows_selected])
-        LOG.info("Scope: %s annual HS6 state/year/flow chunks; default years are a requested scope, "
-                 "not a live coverage certification.", len(chunks))
+        LOG.info("Scope: %s annual HS%s state/year/flow chunks; default years are a requested scope, "
+                 "not a live coverage certification.", len(chunks), args.product_level)
         if args.dry_run:
             print("No requests/writes. Pagination order will be verified live before download.")
             for chunk in chunks[:6]:
@@ -663,6 +719,7 @@ def main(argv=None) -> int:
             LOG.addHandler(handler)
             try:
                 manifest = Manifest(root / "manifest.csv")
+                validate_output_scope(root, manifest, args.product_level, monthly=False)
                 observed = {}
                 for record in manifest.rows:
                     if record["completed"] == "1" and record["flow_label"]:
@@ -673,6 +730,7 @@ def main(argv=None) -> int:
                         session.headers.update({"User-Agent": f"BCMM-research-downloader/{VERSION}",
                                                 "Accept": "application/json"})
                         client = Client(session, args.pause, args.timeout, args.max_retries)
+                        client.transform_rows = template.normalize_rows
                         preflight_path = root / "logs" / f"preflight_{uuid.uuid4().hex}.jsonl.gz"
                         with gzip.open(preflight_path, "wt", encoding="utf-8") as evidence:
                             client.archive = evidence

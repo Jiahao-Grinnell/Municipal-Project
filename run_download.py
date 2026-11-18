@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run/resume BCMM extraction: python run_download.py [--frequency monthly].
+"""Run/resume BCMM extraction: python run_download.py [--product-level {2,4,6}] [--frequency monthly].
 
 Defaults use base_api_url.txt and a frequency-specific folder beside this file. No Codex
 session is required. Each failed chunk gets up to 10 full attempts per launch;
@@ -201,6 +201,8 @@ def clear_dead_lock(root):
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--api-url-file", type=Path, default=HERE / "base_api_url.txt")
+    p.add_argument("--product-level", type=int, choices=[2, 4, 6], default=6,
+                   help="Published product level; HS2/HS4 use their matching native hierarchies")
     p.add_argument("--frequency", choices=["annual", "monthly"], default="annual")
     p.add_argument("--months", default="01-12", help="Monthly selection, e.g. 01-12 or 01,06")
     p.add_argument("--output-dir", type=Path)
@@ -220,7 +222,7 @@ def parse_args(argv=None):
     p.add_argument("--dry-run", action="store_true", help="Print scope/config without writing or requesting data")
     args = p.parse_args(argv)
     if args.output_dir is None:
-        args.output_dir = HERE / f"bcmm_hs6_{args.frequency}"
+        args.output_dir = HERE / f"bcmm_hs{args.product_level}_{args.frequency}"
     try:
         d.state_ids(args.states)
         from monthly_bcmm import month_ids
@@ -255,12 +257,18 @@ def main(argv=None):
     try:
         from monthly_bcmm import MonthlyQueryTemplate
         template_class = MonthlyQueryTemplate if args.frequency == "monthly" else d.QueryTemplate
-        template = template_class(args.api_url_file.read_text(encoding="utf-8-sig").strip())
-        chunks = [d.Chunk(year, state, flow, month) for year in range(args.start_year, args.end_year + 1)
+        template = template_class(args.api_url_file.read_text(encoding="utf-8-sig").strip(),
+                                  product_level=args.product_level)
+        chunks = [d.Chunk(year, state, flow, month, args.product_level) for year in range(args.start_year, args.end_year + 1)
                   for month in (args.month_numbers if args.frequency == "monthly" else [None])
                   for state in d.state_ids(args.states) for flow in args.flows.split(",")]
         if args.dry_run:
             print(f"No requests/writes. Scope: {len(chunks)} chunks, output={root}")
+            print(f"HS{args.product_level} {args.frequency}; Product Level={args.product_level}; "
+                  f"product columns: HS{args.product_level} ID, HS{args.product_level}")
+            if chunks:
+                print("Example request (offset,rows candidate): " +
+                      template.page_url(chunks[0], args.page_size, 0, "offset-rows"))
             print(f"Timeouts: connect={args.connect_timeout}s read={args.read_timeout}s; "
                   f"page size={args.page_size}; chunk attempts={args.chunk_attempts}")
             print(f"Pauses: requests={args.request_pause}s chunks={args.chunk_pause}s; "
@@ -271,16 +279,13 @@ def main(argv=None):
         (root / "logs").mkdir(exist_ok=True)
         clear_dead_lock(root)
         with d.output_lock(root):
+            manifest = d.Manifest(root / "manifest.csv")
+            d.validate_output_scope(root, manifest, args.product_level, args.frequency == "monthly")
             locked = True
             log_file = root / "logs" / f"standalone_{run_id}.log"
             handler = logging.FileHandler(log_file, encoding="utf-8")
             handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
             LOG.addHandler(handler)
-            manifest = d.Manifest(root / "manifest.csv")
-            other_prefix = "bcmm_hs6_annual_" if args.frequency == "monthly" else "bcmm_hs6_monthly_"
-            if any(r["filename"].startswith(other_prefix) for r in manifest.rows) or any(
-                    (root / "raw").glob(other_prefix + "*.csv")):
-                raise d.ValidationError("Do not mix annual and monthly data in one output directory.")
             ledger = FailureLedger(root)
             ledger.save()
             if args.retry_failed:
@@ -319,8 +324,7 @@ def main(argv=None):
                     client = d.Client(session, pause=args.request_pause, timeout=args.read_timeout,
                                       max_retries=2, connect_timeout=args.connect_timeout,
                                       retry_base=10, retry_cap=60)
-                    if args.frequency == "monthly":
-                        client.transform_rows = template.normalize_rows
+                    client.transform_rows = template.normalize_rows
                     evidence_path = root / "logs" / f"preflight_{run_id}.jsonl.gz"
                     with gzip.open(evidence_path, "wt", encoding="utf-8") as evidence:
                         client.archive = evidence

@@ -1,4 +1,4 @@
-Annual and monthly municipality HS6 BCMM downloader
+Annual and monthly municipality HS6 / HS4 / HS2 BCMM downloader
 =====================================
 
 **Current standalone entry point:** `python run_download.py`. See
@@ -6,6 +6,123 @@ Annual and monthly municipality HS6 BCMM downloader
 the existing output, uses generous timeouts and pacing, retries each failed chunk
 up to 10 times, records unresolved failures, and continues the queue. The lower-level
 commands and original pilot workflow below remain available for diagnostic use.
+
+HS2 downloads
+--------------
+
+Keep the existing `base_api_url.txt` and use:
+
+```bat
+python run_download.py --product-level 2 --frequency annual --dry-run
+python run_download.py --product-level 2 --frequency annual
+python run_download.py --product-level 2 --frequency monthly --dry-run
+python run_download.py --product-level 2 --frequency monthly
+```
+
+For 2006-2025, all 32 states and both flows, annual mode selects **1,280 chunks**
+and writes to `bcmm_hs2_annual/`; monthly mode selects **15,360 chunks** and writes
+to `bcmm_hs2_monthly/`. Product columns are `HS2 ID` and `HS2`. All other columns
+follow the existing rules; monthly output appends `Month` as `YYYY-MM`.
+
+The query selects the independently published **`HS2 2 Digit`** hierarchy with
+**Product Level=2**, verified against the
+[official cube metadata](https://www.economia.gob.mx/apidatamexico/tesseract/cubes).
+Plain `HS2` is a different hierarchy and is rejected for this extraction. A copied
+annual HS2 URL using `HS2 2 Digit` and Level=2 is also accepted. Source IDs stay
+intact; no truncation or summation of HS4/HS6 is used to manufacture HS2 data.
+
+Repeat a command to resume, or append `--retry-failed` to retry only its unresolved
+chunks. Each level and frequency has its own manifest, archives, locks, and failure
+ledger. The default remains HS6; HS4/HS6 request URLs, filenames, query fingerprints,
+and resume compatibility are unchanged. An already running downloader keeps its
+imported code in memory and does not need to be stopped or restarted for this update.
+
+After the annual queue finishes with no unresolved failures, validate and merge it:
+
+```bat
+python combine_bcmm_chunks.py --product-level 2
+```
+
+This creates `bcmm_hs2_annual/bcmm_hs2_annual_2006_2025_all.csv` and an accompanying
+`combined_manifest.json`. The merger is for annual data only.
+
+Per-chunk API URLs
+------------------
+
+```bat
+python export_chunk_api_urls.py
+```
+
+This writes `chunk_api_urls.csv` into each of the six `bcmm_hs{2,4,6}_{annual,monthly}`
+folders, with one row per chunk: year, month, state, flow, status (`downloaded`,
+`downloaded_empty` or `failed (...)`), row/page counts, and `api_url_first_page`.
+The URLs come from the latest completed attempt in `manifest.csv`, or from
+`failed_chunks.csv` for unresolved failures. They are the exact requests sent.
+`limit=offset,rows` handles pagination: the first page is `limit=0,4000`, and a
+chunk with `n_pages` > 1 continues with `limit=4000,4000`, `limit=8000,4000`, and
+so on until an empty page is returned. The file is UTF-8 with a BOM so that Excel
+opens it correctly. Rerun the command after any new download.
+
+A folder with unresolved failures also gets `failed_chunk_api_urls.csv`, listing
+only the failed chunks: year, month, state ID and name, flow, error (for example
+`HTTP 502` or `ConnectTimeout`), last failure time, and API URL. When no failures
+remain, the next run deletes it.
+
+HS4 downloads
+--------------
+
+Use the same runner with `--product-level 4`. Annual and monthly data stay separate:
+
+```bat
+python run_download.py --product-level 4 --frequency annual --dry-run
+python run_download.py --product-level 4 --frequency annual
+python run_download.py --product-level 4 --frequency monthly --dry-run
+python run_download.py --product-level 4 --frequency monthly
+```
+
+The default scope remains 2006?2025, states 01?32, both flows: **1,280 annual
+chunks** (year/state/flow) or **15,360 monthly chunks** (month/state/flow).
+Annual files go to `bcmm_hs4_annual/`; monthly files go to `bcmm_hs4_monthly/`.
+Each directory has its own `raw/`, `responses/`, manifest, logs, failure ledger,
+attempt history, and run summary. Repeating the same command resumes that queue.
+Append `--retry-failed` to retry only unresolved failures for the selected mode.
+
+Keep the existing annual HS6 `base_api_url.txt`. The adapter preserves its endpoint
+and cuts, replacing the product drilldown with **`HS4 4 Digit`** and setting
+**Product Level=4**. A copied annual HS4 URL using that same native hierarchy is
+also accepted. The native hierarchy was checked against the
+[official cube metadata](https://www.economia.gob.mx/apidatamexico/tesseract/cubes).
+Plain `HS4` belongs to the six-digit Product hierarchy and must not be used for
+this independent four-digit extraction. No HS6 values are summed to create HS4.
+
+All other CSV columns retain their source names and values. Only the native
+`HS4 4 Digit ID` and `HS4 4 Digit` headers become **`HS4 ID` and `HS4`**. Monthly
+output uses the existing verified Year/Month adapter and appends `Month` as
+`YYYY-MM`. Source product IDs remain intact strings; they are not truncated to
+four characters. Response archives preserve the original headers and bodies.
+
+The same page size, sequential pacing, ten complete attempts per chunk,
+pagination checks, uniqueness checks, checksum validation, and exit codes apply.
+Directories containing a different product level or frequency are rejected.
+HS6 remains the default, with its existing filenames and resume fingerprints.
+To validate all completed annual chunks and merge HS4 into one CSV, run:
+
+```powershell
+python combine_bcmm_chunks.py --product-level 4
+```
+
+The merger checks unresolved failures, pagination evidence, query fingerprints,
+CSV and response archive hashes, columns, and row counts before merging. Output:
+`bcmm_hs4_annual/bcmm_hs4_annual_2006_2025_all.csv`, with a
+`combined_manifest.json` containing the row count and SHA256. The default remains
+annual HS6; monthly files stay in their separate directory.
+
+Single-chunk checks:
+
+```bat
+python run_download.py --product-level 4 --frequency annual --start-year 2017 --end-year 2017 --states 01 --flows 1
+python run_download.py --product-level 4 --frequency monthly --start-year 2017 --end-year 2017 --months 01 --states 01 --flows 1
+```
 
 **Monthly mode:** run `python run_download.py --frequency monthly`. It selects
 2006–2025, months 01–12, states 01–32, and both flows: **15,360 chunks**, each
@@ -40,7 +157,51 @@ The month is explicit in chunk filenames and request URLs in the manifest and
 failure ledger; their existing schemas are retained for annual compatibility.
 Use distinct output directories for the two frequencies. The existing
 `combine_bcmm_chunks.py` is an annual merger and must not be used for monthly
-output. Download integrity checks do not establish full source coverage or
+output. For monthly data, validate all 15,360 chunks and create four five-year CSVs:
+
+```bat
+python combine_bcmm_monthly.py --product-level 4
+```
+
+Files go to `bcmm_hs4_monthly/combined_5year/`, named
+`bcmm_hs4_monthly_2006_2010.csv`, `2011_2015`, `2016_2020`, and `2021_2025`
+(with the same prefix and `.csv` extension). All monthly rows and the `Month`
+column are preserved; the data are concatenated without aggregation. A
+`combined_manifest.json` records row counts and SHA256 for every output.
+The merger checks source CSV/archive hashes, completion evidence, query
+fingerprints, headers, row counts and period cuts. It refuses unresolved failures
+or incomplete coverage and stages every group before committing final CSVs.
+
+If some chunks still fail after retries (for example HS2 monthly, where 16 chunks hit
+repeated HTTP 502/timeouts), you can merge the rest explicitly:
+
+```bat
+python combine_bcmm_monthly.py --product-level 2 --allow-missing
+```
+
+Only the chunks listed in `failed_chunks.csv` are excluded. Every other chunk must
+still pass all checks, and a ledger entry for a completed chunk stops the merge.
+The merger writes two lists to `combined_5year/`:
+
+- `missing_chunks.csv` has one row per excluded chunk: year, month, `year_month`,
+  state ID and name, flow ID and name, affected five-year file, and the error
+  details and query URL from the failure ledger. Each chunk covers **all
+  municipalities** of its state, so the whole state-month-flow is missing.
+- `missing_chunks_municipalities.csv` has one row per excluded chunk and
+  municipality: year, month, state, flow, and the municipality ID and name.
+  The municipalities come from that state's *other downloaded chunks in the same
+  year*. They show which municipalities are likely affected; this is not the
+  source's own list for the missing month.
+
+`combined_manifest.json` records `coverage="incomplete"`, `n_missing_chunks`,
+the number missing from each output file, and both lists' SHA256 under
+`missing_lists`. The merger always writes both files; when coverage is complete
+they contain only the header. After a later
+`--retry-failed` run recovers the chunks, rerun the merge without the flag.
+Original chunks and downloader records are retained. Levels 2 and 6 are also
+supported, with their separate source and output directories.
+
+Download integrity checks do not establish full source coverage or
 reconciliation; monthly and annual published values may differ, and monthly
 values must not automatically replace the annual extraction.
 
@@ -285,7 +446,7 @@ flow IDs can be supplied explicitly if the live categories change.
 
 Only published records are written. Missing combinations are not generated,
 zero-filled, or classified as suppression. Number of Firms is never summed or
-imputed. Monthly data, HS2, HS4, movement-cube matching, Stata conversion,
+imputed. Movement-cube matching, Stata conversion,
 currency conversion, and suppression analysis are outside this downloader.
 
 To require Number of Firms later, obtain a fresh copied URL selecting both
